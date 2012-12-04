@@ -1,0 +1,108 @@
+#ifndef MASTER_H_
+#define MASTER_H_
+
+#include "piccolo.pb.h"
+#include "piccolo/table.h"
+#include "piccolo/kernel.h"
+
+#include "util/common.h"
+#include "util/timer.h"
+#include "util/rpc.h"
+
+#include <vector>
+#include <map>
+
+namespace piccolo {
+
+class WorkerState;
+class TaskState;
+
+struct RunDescriptor {
+  string kernel;
+  string method;
+
+  ShardedTable *table;
+  bool barrier;
+  std::vector<int> shards;
+
+  int epoch;
+
+  RunDescriptor() {
+    Init("bogus", "bogus", NULL);
+  }
+
+  RunDescriptor(const string& kernel, const string& method, ShardedTable *table,
+      std::vector<int> cp_tables = std::vector<int>()) {
+    Init(kernel, method, table, cp_tables);
+  }
+
+  void Init(const string& kernel, const string& method, ShardedTable *table,
+      std::vector<int> cp_tables = std::vector<int>()) {
+    barrier = true;
+    this->kernel = kernel;
+    this->method = method;
+    this->table = table;
+  }
+};
+
+class Master {
+public:
+  Master(const ConfigData &conf);
+  ~Master();
+
+  template<class F>
+  void map(Table* t, F mapFunction) {
+
+  }
+
+  template<class F>
+  void run(Table* t, F runFunction) {
+
+  }
+
+private:
+  void run(RunDescriptor r);
+
+  WorkerState* worker_for_shard(int table, int shard);
+
+  // Find a worker to run a kernel on the given table and shard.  If a worker
+  // already serves the given shard, return it.  Otherwise, find an eligible
+  // worker and assign it to them.
+  WorkerState* assign_worker(int table, int shard);
+
+  void send_table_assignments();
+  void assign_tables();
+
+  void dump_stats();
+  int reap_one_task();
+
+  void barrier();
+  void assign_tasks(const RunDescriptor& r, std::vector<int> shards);
+  int dispatch_work(const RunDescriptor& r);
+  bool steal_work(const RunDescriptor& r, int idle_worker,
+      double avg_completion_time);
+
+
+  RunDescriptor current_run_;
+  double current_run_start_;
+
+  ConfigData config_;
+  int kernel_epoch_;
+
+  size_t dispatched_;
+  size_t finished_;
+
+  bool shards_assigned_;
+
+  std::vector<WorkerState*> workers_;
+
+  typedef std::map<string, MethodStats> MethodStatsMap;
+  MethodStatsMap method_stats_;
+
+  TableRegistry::Map& tables_;
+  rpc::NetworkThread* network_;
+  Timer runtime_;
+};
+}
+
+#endif /* MASTER_H_ */

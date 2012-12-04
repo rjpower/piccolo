@@ -1,0 +1,22 @@
+option optimize_for=SPEED;
+package piccolo;
+
+//shortest-path.cc
+message PathNode {
+  required int32 id = 1;
+  repeated int32 target = 2;
+  optional int32 distance = 3 [default = 0];
+  optional bool dirty = 4 [default = false];
+}
+
+
+message Page {
+  required int32 id = 1;
+  required int32 site = 2;
+  repeated int32 target_site = 3;
+  repeated int32 target_id = 4;
+}
+
+message Bucket {
+  repeated fixed32 value = 1;
+}
