@@ -82,67 +82,72 @@ struct MatrixMultiplication {
         new BlockSum);
   }
 
+  static void init(TableT<int, Block>* table, int my_shard) {
+    int numShards = matrix_a->numShards;
+
+    ShardHelper sh(my_shard, numShards);
+
+    Block b, z;
+    for (int i = 0; i < FLAGS_block_size * FLAGS_block_size; ++i) {
+      b.d[i] = 2;
+      z.d[i] = 0;
+    }
+
+    int bcount = 0;
+
+    for (int by = 0; by < bRows; by++) {
+      for (int bx = 0; bx < bCols; bx++) {
+        if (!sh.is_local(by, bx)) {
+          continue;
+        }
+        ++bcount;
+        matrix_a->update(sh.block_id(by, bx), b);
+        matrix_b->update(sh.block_id(by, bx), b);
+        matrix_c->update(sh.block_id(by, bx), z);
+      }
+    }
+  }
+
+  static void multiply(TableT<int, Block>* table, int my_shard) {
+    Block a, b, c;
+
+    int numShards = matrix_a->numShards;
+    ShardHelper sh(my_shard, numShards);
+
+    for (int k = 0; k < bRows; k++) {
+      for (int i = 0; i < bRows; i++) {
+        for (int j = 0; j < bCols; j++) {
+          if (!sh.is_local(i, k)) {
+            continue;
+          }
+          a = matrix_a->get(sh.block_id(i, k));
+          b = matrix_b->get(sh.block_id(k, j));
+          cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+              FLAGS_block_size, FLAGS_block_size, FLAGS_block_size, 1, a.d,
+              FLAGS_block_size, b.d, FLAGS_block_size, 1, c.d,
+              FLAGS_block_size);
+          matrix_c->update(sh.block_id(i, j), c);
+        }
+      }
+    }
+  }
+
+  static void print(TableT<int, Block>* table, int shard) {
+    ShardHelper sh(shard, matrix_a->numShards);
+    Block b = matrix_c->get(sh.block_id(0, 0));
+    for (int i = 0; i < 5; ++i) {
+      for (int j = 0; j < 5; ++j) {
+        printf("%.2f ", b.d[FLAGS_block_size * i + j]);
+      }
+      printf("\n");
+    }
+  }
+
   void run(Master* m, const ConfigData& conf) {
     for (int i = 0; i < FLAGS_iterations; ++i) {
-      m->run(matrix_a, [](TableT<int, Block*>* shard) {
-        int numShards = matrix_a->numShards;
-        int my_shard = shard->shard;
-
-        ShardHelper sh(my_shard, numShards);
-
-        Block b, z;
-        for (int i = 0; i < FLAGS_block_size * FLAGS_block_size; ++i) {
-          b.d[i] = 2;
-          z.d[i] = 0;
-        }
-
-        int bcount = 0;
-
-        for (int by = 0; by < bRows; by ++) {
-          for (int bx = 0; bx < bCols; bx ++) {
-            if (!sh.is_local(by, bx)) {continue;}
-            ++bcount;
-            matrix_a->update(sh.block_id(by, bx), b);
-            matrix_b->update(sh.block_id(by, bx), b);
-            matrix_c->update(sh.block_id(by, bx), z);
-          }
-        }
-      });
-
-      m->run(matrix_a,
-          [](TableT<int, Block*>* shard) {
-            Block a, b, c;
-
-            int numShards = matrix_a->numShards;
-            int my_shard = shard->shard;
-
-            ShardHelper sh(my_shard, numShards);
-
-            for (int k = 0; k < bRows; k++) {
-              for (int i = 0; i < bRows; i++) {
-                for (int j = 0; j < bCols; j++) {
-                  if (!sh.is_local(i, k)) {continue;}
-                  a = matrix_a->get(sh.block_id(i, k));
-                  b = matrix_b->get(sh.block_id(k, j));
-                  cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                      FLAGS_block_size, FLAGS_block_size, FLAGS_block_size, 1,
-                      a.d, FLAGS_block_size, b.d, FLAGS_block_size, 1, c.d, FLAGS_block_size);
-                  matrix_c->update(sh.block_id(i, j), c);
-                }
-              }
-            }
-          });
-
-      m->run(matrix_c, [](TableT<int, Block*>* shard) {
-        ShardHelper sh(shard->shard, matrix_a->numShards);
-        Block b = matrix_c->get(sh.block_id(0, 0));
-        for (int i = 0; i < 5; ++i) {
-          for (int j = 0; j < 5; ++j) {
-            printf("%.2f ", b.d[FLAGS_block_size*i+j]);
-          }
-          printf("\n");
-        }
-      });
+      matrix_a->run<&init>();
+      matrix_a->run<&multiply>();
+      matrix_c->run<&print>();
     }
   }
 };

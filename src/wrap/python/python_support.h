@@ -13,8 +13,8 @@ using namespace std;
 
 namespace piccolo {
 
-static KernelBase *the_kernel;
-KernelBase* kernel();
+static Kernel *the_kernel;
+Kernel* kernel();
 
 double crawler_runtime();
 

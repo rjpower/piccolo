@@ -1,4 +1,9 @@
 #include "piccolo.h"
+#include "examples.h"
+
+namespace piccolo {
+RunnerRegistry::Map RunnerRegistry::runners;
+}
 
 using namespace piccolo;
 
@@ -12,8 +17,6 @@ DEFINE_bool(build_graph, false, "");
 
 DECLARE_bool(log_prefix);
 
-extern int KernelRunner(const ConfigData& config);
-
 int main(int argc, char** argv) {
   FLAGS_log_prefix = false;
 
@@ -23,6 +26,10 @@ int main(int argc, char** argv) {
   conf.set_num_workers(MPI::COMM_WORLD.Get_size() - 1);
   conf.set_worker_id(MPI::COMM_WORLD.Get_rank() - 1);
 
-  KernelRunner(conf);
-  LOG(INFO) << "Exiting.";
+  RunnerRegistry::runners[FLAGS_runner]->setup(conf);
+  if (!StartWorker(conf)) {
+    Master m(conf);
+    RunnerRegistry::runners[FLAGS_runner]->run(&m, conf);
+  }
+  LOG(INFO)<< "Exiting.";
 }

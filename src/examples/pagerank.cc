@@ -56,6 +56,21 @@ TableT<PageId, float>* curr_pr;
 TableT<PageId, float>* next_pr;
 TableT<uint64_t, Page> *pages;
 
+void PRMapper(const uint64_t& id, Page& n) {
+  struct PageId p = {n.site(), n.id()};
+  next_pr->update(p, random_restart_seed());
+
+  float v = curr_pr->get(p, 0);
+
+  float contribution = kPropagationFactor * v / n.target_site_size();
+  for (int i = 0; i < n.target_site_size(); ++i) {
+    PageId target = {n.target_site(i), n.target_id(i)};
+    if (!(target == p)) {
+      next_pr->update(target, contribution);
+    }
+  }
+}
+
 struct Pagerank {
   void setup(const ConfigData& conf) {
     NUM_WORKERS = conf.num_workers();
@@ -71,24 +86,7 @@ struct Pagerank {
     next_pr->reserve((int) (2 * FLAGS_nodes));
     curr_pr->reserve((int) (2 * FLAGS_nodes));
 
-    m->map(pages, [](TableT<PageId, Page>* t) {
-      TableIteratorT<uint64_t, Page> *it = pages->typedIterator();
-      for (; !it->done(); it->Next()) {
-        Page& n = it->value();
-        struct PageId p = {n.site(), n.id()};
-        next_pr->update(p, random_restart_seed());
-
-        float v = curr_pr->get(p, 0);
-
-        float contribution = kPropagationFactor * v / n.target_site_size();
-        for (int i = 0; i < n.target_site_size(); ++i) {
-          PageId target = {n.target_site(i), n.target_id(i)};
-          if (!(target == p)) {
-            next_pr->update(target, contribution);
-          }
-        }
-      }
-    });
+    pages->map<&PRMapper>();
 
     // Move the values computed from the last iteration into the current table.
     curr_pr->swap(next_pr);

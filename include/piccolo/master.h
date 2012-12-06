@@ -18,31 +18,15 @@ class WorkerState;
 class TaskState;
 
 struct RunDescriptor {
-  string kernel;
-  string method;
-
   ShardedTable *table;
-  bool barrier;
+  int kernelId;
   std::vector<int> shards;
+};
 
-  int epoch;
-
-  RunDescriptor() {
-    Init("bogus", "bogus", NULL);
-  }
-
-  RunDescriptor(const string& kernel, const string& method, ShardedTable *table,
-      std::vector<int> cp_tables = std::vector<int>()) {
-    Init(kernel, method, table, cp_tables);
-  }
-
-  void Init(const string& kernel, const string& method, ShardedTable *table,
-      std::vector<int> cp_tables = std::vector<int>()) {
-    barrier = true;
-    this->kernel = kernel;
-    this->method = method;
-    this->table = table;
-  }
+template <class K, class V>
+struct Mapper {
+  Mapper(boost::function<void (const K&, V&)> mapF);
+  void operator()(const K&, V&);
 };
 
 class Master {
@@ -50,18 +34,9 @@ public:
   Master(const ConfigData &conf);
   ~Master();
 
-  template<class F>
-  void map(Table* t, F mapFunction) {
-
-  }
-
-  template<class F>
-  void run(Table* t, F runFunction) {
-
-  }
+  void run(RunDescriptor r);
 
 private:
-  void run(RunDescriptor r);
 
   WorkerState* worker_for_shard(int table, int shard);
 
@@ -82,7 +57,6 @@ private:
   bool steal_work(const RunDescriptor& r, int idle_worker,
       double avg_completion_time);
 
-
   RunDescriptor current_run_;
   double current_run_start_;
 
@@ -96,7 +70,7 @@ private:
 
   std::vector<WorkerState*> workers_;
 
-  typedef std::map<string, MethodStats> MethodStatsMap;
+  typedef std::map<int, MethodStats> MethodStatsMap;
   MethodStatsMap method_stats_;
 
   TableRegistry::Map& tables_;

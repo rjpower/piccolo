@@ -77,7 +77,6 @@ enum CheckpointType {
 
 message RegisterWorkerRequest {
   required int32 id = 1;
-//  optional repeated ShardInfo shards;
 }
 
 message ShardAssignment {
@@ -96,6 +95,8 @@ message ShardInfo {
   required uint32 shard = 2;
   required uint64 entries = 3;
   required int32 owner = 4 [default = -1];
+  optional bool tainted = 5;
+  optional bool dirty = 6;
 }
 
 message MethodStats {
@@ -106,8 +107,7 @@ message MethodStats {
 };
 
 message KernelRequest {
-  required string kernel = 1;
-  required string method = 2;
+  required int32 kernelId = 1;
   optional int32 table = 3;
   optional int32 shard = 4;
 }

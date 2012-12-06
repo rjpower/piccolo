@@ -11,7 +11,7 @@ using std::map;
 using std::vector;
 using std::set;
 
-DECLARE_bool(work_stealing);
+DEFINE_bool(work_stealing, true, "");
 DECLARE_double(sleep_time);
 
 namespace piccolo {
@@ -111,7 +111,7 @@ struct WorkerState: private boost::noncopyable {
   }
 
   void assign_shard(int shard, bool should_service) {
-    TableRegistry::Map &tables = TableRegistry::tables();
+    TableRegistry::Map &tables = TableRegistry::tables;
     for (TableRegistry::Map::iterator i = tables.begin(); i != tables.end();
         ++i) {
       if (shard < i->second->numShards) {
@@ -195,8 +195,7 @@ struct WorkerState: private boost::noncopyable {
     TaskState* best = *max_element(p.begin(), p.end(),
         &TaskState::WeightCompare);
 
-    msg->set_kernel(r.kernel);
-    msg->set_method(r.method);
+    msg->set_kernelid(r.kernelId);
     msg->set_table(r.table->id);
     msg->set_shard(best->id.shard);
 
@@ -208,7 +207,7 @@ struct WorkerState: private boost::noncopyable {
 };
 
 Master::Master(const ConfigData &conf) :
-    tables_(TableRegistry::tables()) {
+    tables_(TableRegistry::tables) {
   config_.CopyFrom(conf);
   kernel_epoch_ = 0;
   finished_ = dispatched_ = 0;
@@ -345,7 +344,7 @@ bool Master::steal_work(const RunDescriptor& r, int idle_worker,
   double average_size = 0;
 
   for (int i = 0; i < r.table->numShards; ++i) {
-    average_size += 1;
+    average_size += static_cast<ShardedTable*>(r.table)->shardSize(i);
   }
   average_size /= r.table->numShards;
 
@@ -380,8 +379,8 @@ bool Master::steal_work(const RunDescriptor& r, int idle_worker,
 void Master::assign_tables() {
   shards_assigned_ = true;
 
-  // Assign workers for all table shards, to ensure every shard has an workerForShard.
-  TableRegistry::Map &tables = TableRegistry::tables();
+  // Assign workers for all table shards, to ensure every shard has an owner.
+  TableRegistry::Map &tables = TableRegistry::tables;
   for (TableRegistry::Map::iterator i = tables.begin(); i != tables.end();
       ++i) {
     if (!i->second->numShards) {
@@ -427,15 +426,10 @@ void Master::dump_stats() {
     status += StringPrintf("%d/%d ", workers_[k]->num_finished(),
         workers_[k]->num_assigned());
   }
-  LOG(INFO)<< StringPrintf("Running %s (%d); %s; assigned: %d done: %d",
-      current_run_.method.c_str(), current_run_.shards.size(),
-      status.c_str(), dispatched_, finished_);
-
 }
 
 int Master::reap_one_task() {
-  MethodStats &mstats = method_stats_[current_run_.kernel + ":"
-      + current_run_.method];
+  MethodStats &mstats = method_stats_[current_run_.kernelId];
   KernelDone done_msg;
   int w_id = 0;
 
@@ -470,26 +464,17 @@ void Master::run(RunDescriptor r) {
   // HACKHACKHACK - register ourselves with any existing tables
   for (TableRegistry::Map::iterator i = tables_.begin(); i != tables_.end();
       ++i) {
-    i->second->setHelper((TableHelper*)this);
+    i->second->setHelper((TableHelper*) this);
   }
 
-  CHECK_EQ(current_run_.shards.size(), finished_)<< " Cannot start kernel before previous one is finished ";
   finished_ = dispatched_ = 0;
+  vector<int> shards = range(r.table->numShards);
 
-  KernelInfo *k = KernelRegistry::Get()->kernel(r.kernel);
-  CHECK_NE(r.table, (void*)NULL)<< "Table locality must be specified!";
-  CHECK_NE(k, (void*)NULL)<< "Invalid kernel class " << r.kernel;
-  CHECK_EQ(k->has_method(r.method), true)<< "Invalid method: " << MP(r.kernel, r.method);
-
-  VLOG(1) << "Running: " << r.kernel << " : " << r.method << " on table "
-             << r.table->id;
-
-  vector<int> shards = r.shards;
-
-  MethodStats &mstats = method_stats_[r.kernel + ":" + r.method];
+  MethodStats &mstats = method_stats_[r.kernelId];
   mstats.set_calls(mstats.calls() + 1);
 
   current_run_ = r;
+  current_run_.shards = shards;
   current_run_start_ = Now();
 
   if (!shards_assigned_) {
@@ -508,8 +493,7 @@ void Master::run(RunDescriptor r) {
 }
 
 void Master::barrier() {
-  MethodStats &mstats = method_stats_[current_run_.kernel + ":"
-      + current_run_.method];
+  MethodStats &mstats = method_stats_[current_run_.kernelId];
 
   VLOG(3) << "Starting barrier() with finished_=" << finished_;
 
@@ -587,7 +571,6 @@ void Master::barrier() {
     VLOG(2) << "Sent apply broadcast to workers" << endl;
 
     mstats.set_total_time(mstats.total_time() + Now() - current_run_start_);
-    LOG(INFO)<< "Kernel '" << current_run_.method << "' finished in " << Now() - current_run_start_;
   }
 }
 

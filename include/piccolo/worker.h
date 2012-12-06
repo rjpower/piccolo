@@ -40,32 +40,27 @@ public:
   void CheckNetwork();
 
   void HandleGetRequest(const HashGet& get_req, TableData *get_resp,
-                        const rpc::RPCInfo& rpc);
+      const rpc::RPCInfo& rpc);
   void HandleSwapRequest(const SwapTable& req, EmptyMessage *resp,
-                         const rpc::RPCInfo& rpc);
+      const rpc::RPCInfo& rpc);
   void HandleClearRequest(const ClearTable& req, EmptyMessage *resp,
-                          const rpc::RPCInfo& rpc);
+      const rpc::RPCInfo& rpc);
   void HandleIteratorRequest(const IteratorRequest& iterator_req,
-                             IteratorResponse *iterator_resp,
-                             const rpc::RPCInfo& rpc);
+      IteratorResponse *iterator_resp, const rpc::RPCInfo& rpc);
   void HandleShardAssignment(const ShardAssignmentRequest& req,
-                             EmptyMessage *resp, const rpc::RPCInfo& rpc);
+      EmptyMessage *resp, const rpc::RPCInfo& rpc);
 
   void HandlePutRequest();
 
   // Barrier: wait until all table data is transmitted.
   void HandleFlush(const EmptyMessage& req, FlushResponse *resp,
-                   const rpc::RPCInfo& rpc);
+      const rpc::RPCInfo& rpc);
   void HandleApply(const EmptyMessage& req, EmptyMessage *resp,
-                   const rpc::RPCInfo& rpc);
+      const rpc::RPCInfo& rpc);
   void HandleFinalize(const EmptyMessage& req, EmptyMessage *resp,
-                      const rpc::RPCInfo& rpc);
-  void HandleStartCheckpointAsync(const CheckpointRequest& req,
-                                  EmptyMessage* resp, const rpc::RPCInfo& rpc);
-  void HandleFinishCheckpointAsync(const CheckpointFinishRequest& req,
-                                   EmptyMessage *resp, const rpc::RPCInfo& rpc);
+      const rpc::RPCInfo& rpc);
   void HandleStartRestore(const StartRestore& req, EmptyMessage *resp,
-                          const rpc::RPCInfo& rpc);
+      const rpc::RPCInfo& rpc);
 
   /*
    // Enable or disable triggers
@@ -76,7 +71,6 @@ public:
   int id() const {
     return config_.worker_id();
   }
-  ;
   int epoch() const {
     return epoch_;
   }
@@ -87,24 +81,15 @@ public:
   bool has_incoming_data() const;
 
 private:
-  void StartCheckpoint(int epoch, CheckpointType type, bool deltaOnly);
-  void FinishCheckpoint(bool deltaOnly);
-  void UpdateEpoch(int peer, int peer_epoch);
-  void UpdateEpochContinuous(int peer, int peer_epoch);
-
   mutable boost::recursive_mutex state_lock_;
 
   // The current epoch this worker is running within.
   int epoch_;
 
   int num_peers_;
-  bool running_;
-  bool krunning_;
-  bool handling_putreqs_;
-  CheckpointType active_checkpoint_;
-
-  typedef boost::unordered_map<int, bool> CheckpointMap;
-  CheckpointMap checkpoint_tables_;
+  bool workerRunning_;
+  bool kernelRunning_;
+  bool handlingPuts_;
 
   ConfigData config_;
 
@@ -138,7 +123,7 @@ private:
     }
   };
 
-  std::map<KernelId, KernelBase*> kernels_;
+  std::map<KernelId, Kernel*> kernels_;
 
   Stats stats_;
 };

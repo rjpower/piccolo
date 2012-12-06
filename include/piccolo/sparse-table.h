@@ -5,7 +5,6 @@
 
 #include "piccolo.pb.h"
 #include "piccolo/table.h"
-#include "piccolo/table-inl.h"
 
 #include <boost/noncopyable.hpp>
 #include <boost/dynamic_bitset.hpp>
@@ -15,9 +14,7 @@ namespace piccolo {
 static const double kLoadFactor = 0.4;
 
 template<class K, class V>
-class SparseTable: public Table,
-    public TableT<K, V>,
-    private boost::noncopyable {
+class SparseTable: public TableT<K, V>, private boost::noncopyable {
 private:
 #pragma pack(push, 1)
   struct Bucket {
@@ -55,19 +52,13 @@ public:
     SparseTable<K, V> &parent_;
   };
 
-  struct Factory: public TableFactory {
-    TableBase* New() {
-      return new SparseTable<K, V>();
-    }
-  };
+  static Table* create() {
+    return new SparseTable;
+  }
 
   // Construct a SparseTable with the given initial size; it will be expanded as necessary.
   SparseTable(int size = 1);
   ~SparseTable() {
-  }
-
-  void init(const TableDescriptor * td) {
-    Table::init(td);
   }
 
   V get(const K& k);
@@ -159,7 +150,7 @@ int64_t SparseTable<K, V>::read(TableCoder *in) {
   string k, v;
   int updates = 0;
   while (in->read(&k, &v)) {
-    updateStr(k, v);
+    this->updateStr(k, v);
     updates++;
   }
   return updates;
@@ -181,7 +172,7 @@ void SparseTable<K, V>::applyUpdates(TableCoder *in) {
 template<class K, class V>
 void SparseTable<K, V>::resize(int64_t size) {
   CHECK_GT(size, 0);
-  VLOG(1) << "Resizing/rehashing table " << id() << "... " << entries_ << " : "
+  VLOG(1) << "Resizing/rehashing table " << this->id << "... " << entries_ << " : "
              << size_ << " -> " << size;
 
   if (size_ == size)
@@ -222,7 +213,8 @@ template<class K, class V>
 void SparseTable<K, V>::update(const K& k, const V& v) {
   int b = bucket_for_key(k);
   if (b != -1) {
-    ((Accumulator<V>*) info_.accum)->Accumulate(&buckets_[b].v, v);
+    static_cast<Accumulator<V>*>(this->accumulator)->Accumulate(&buckets_[b].v,
+        v);
   }
 }
 

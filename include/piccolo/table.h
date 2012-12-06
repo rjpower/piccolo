@@ -4,17 +4,22 @@
 #include "util/common.h"
 #include "util/file.h"
 #include "util/marshal.h"
+
+#include <boost/smart_ptr.hpp>
 #include <boost/thread.hpp>
 
 #include "piccolo.pb.h"
 
 namespace piccolo {
 
+class Table;
 class TableHelper;
 class TableData;
 
 static const int kReadAhead = 1024;
 static const int kWriteFlushCount = 1000000;
+
+typedef boost::function<Table* (void)> TableCreator;
 
 struct AccumulatorBase {
 };
@@ -87,12 +92,6 @@ struct TableCoder {
   virtual bool read(string* key, string* value) = 0;
 };
 
-struct ProtoTableCoder : public TableCoder {
-  ProtoTableCoder(TableData*);
-  void write(StringPiece key, StringPiece value);
-  bool read(string* key, string* value);
-};
-
 struct TableIterator {
   virtual void keyStr(string *out) = 0;
   virtual void valueStr(string *out) = 0;
@@ -114,7 +113,6 @@ struct TableIterator {
 
 struct Table {
   int id;
-  int shard;
   int numShards;
 
   AccumulatorBase* accumulator;
@@ -156,6 +154,7 @@ class TableT: public Table {
 public:
   typedef TableIteratorT<K, V> TypedIter;
   virtual bool contains(const K &k) = 0;
+
   V get(const K& k, const V& defValue) {
     if (contains(k)) {
       return get(k);
@@ -168,45 +167,38 @@ public:
   virtual void update(const K &k, const V &v) = 0;
   virtual void remove(const K &k) = 0;
   virtual TypedIter* typedIterator() = 0;
-protected:
-};
 
-struct PartitionInfo {
-  PartitionInfo() :
-      dirty(false), tainted(false) {
+  template<void (*MapFunction)(const K&, V&)>
+  void map() {
+
   }
-  bool dirty;
-  bool tainted;
-  ShardInfo sinfo;
+
+  template<void (*RunFunction)(TableT<K, V>*, int)>
+  void run() {
+
+  }
+
+  template<class KernelClass, void (KernelClass::*)(TableT<K, V>*, int)>
+  void runKernel() {
+
+  }
+protected:
 };
 
 class ShardedTable: public Table {
 public:
   virtual ~ShardedTable();
-  virtual void updatePartitions(const ShardInfo& sinfo);
-  virtual TableIterator* iterator(int shard);
 
-  virtual bool isLocalShard(int shard);
-  virtual bool isLocalKey(const StringPiece &k);
-  virtual int workerForShard(int shard);
+  Table* partition(int shard);
+  ShardInfo* partitionInfo(int shard);
+  void updatePartitions(const ShardInfo& sinfo);
+  int64_t shardSize(int shard);
 
-  virtual PartitionInfo* partitionInfo(int shard);
-  virtual Table* partition(int shard);
+  bool isLocalShard(int shard);
+  bool isLocalKey(const StringPiece &k);
+  int workerForShard(int shard);
 
-  virtual bool tainted(int shard);
-
-  // Handle updates from the master or other workers.
-  virtual void sendUpdates();
-  virtual void applyUpdates(const TableData& req);
-  virtual void handlePutRequests();
-
-  // Exchange the content of this table with that of table 'b'.
-  virtual void swap(ShardedTable *b);
-  virtual void clear();
-
-  virtual int shardForKeyStr(StringPiece);
-  virtual int64_t pendingWriteBytes();
-
+  virtual int shardForKeyStr(StringPiece) = 0;
 
   void setHelper(TableHelper* h) {
     worker_ = h;
@@ -216,13 +208,8 @@ protected:
   friend class Worker;
   friend class Master;
 
-  // Fill in a response from a remote worker for the given key.
-  virtual void handleGetRequest(const HashGet& req, TableData* resp);
-  virtual int64_t shardSize(int shard);
-  virtual void swapLocal(ShardedTable *b);
-
   boost::recursive_mutex mutex_;
-  std::vector<PartitionInfo> partInfo_;
+  std::vector<ShardInfo> partInfo_;
   std::vector<Table*> partitions_;
   int workerId_;
   int pendingWrites_;
@@ -230,27 +217,9 @@ protected:
 };
 
 template<class K, class V>
-class RemoteIterator: public TableIteratorT<K, V> {
+class ProxyTableT: public TableT<K, V> {
 public:
-  RemoteIterator(ShardedTable* table, int shard);
-  void keyStr(string* out);
-  void valueStr(string* out);
-  bool done();
-  void Next();
 
-  const K& key();
-  V& value();
-
-private:
-  ShardedTable* owner_;
-  IteratorRequest request_;
-  IteratorResponse response_;
-
-  int pos_;
-  int shard_;
-  K key_;
-  V value_;
-  bool done_;
 };
 
 class TableRegistry: private boost::noncopyable {
@@ -258,27 +227,16 @@ private:
   TableRegistry();
 public:
   typedef std::map<int, ShardedTable*> Map;
-
-  static Map& tables() {
-    return getInstance()->tmap_;
-  }
+  static Map tables;
 
   static ShardedTable* table(int id) {
-    return getInstance()->tmap_[id];
+    return tables[id];
   }
 
   template<class K, class V>
   static TableT<K, V>* sparse(int numShards, Sharder<K>* sharding,
-      Accumulator<V>* accum) {
-    return static_cast<TableT<K, V>*>(getInstance()->_sparse(numShards,
-        sharding, accum));
-  }
-
+      Accumulator<V>* accum);
 private:
-  static TableRegistry* getInstance();
-  Table* _sparse(int numShards, SharderBase* sharder, AccumulatorBase* accum);
-
-  Map tmap_;
 };
 
 }

@@ -8,7 +8,8 @@ typedef uint32_t KeyType;
 typedef Bucket ValueType;
 
 static std::vector<int> src;
-static TableT<KeyType, ValueType> *dst = NULL;
+typedef TableT<KeyType, ValueType> SortTable;
+static SortTable *dst = NULL;
 
 struct BucketMerge: public Accumulator<Bucket> {
   void Accumulate(Bucket *l, const Bucket &r) {
@@ -32,16 +33,16 @@ struct KeyGen {
 
 DEFINE_int64(sort_size, 1000000, "");
 
-class SortKernel: public DSMKernel {
+class SortKernel: public Kernel {
 public:
-  void Init() {
+  void Init(SortTable* t, int shard) {
     KeyGen k;
     for (int i = 0; i < FLAGS_sort_size / dst->numShards; ++i) {
       src.push_back(k.next());
     }
   }
 
-  void Partition() {
+  void Partition(SortTable* t, int shard) {
     Bucket b;
     b.mutable_value()->Add(0);
     for (int i = 0; i < src.size(); ++i) {
@@ -51,7 +52,7 @@ public:
     }
   }
 
-  void Sort() {
+  void Sort(SortTable* t, int shard) {
     TableIteratorT<KeyType, ValueType> *i = dst->typedIterator();
     while (!i->done()) {
       Bucket b = i->value();
@@ -70,8 +71,8 @@ struct IntegerSort: public Worker {
   }
 
   void run(Master* m, const ConfigData& conf) {
-    m->run(dst, &SortKernel::Init);
-    m->run(dst, &SortKernel::Partition);
-    m->run(dst, &SortKernel::Sort);
+    dst->runKernel<SortKernel, &SortKernel::Init>();
+    dst->runKernel<SortKernel, &SortKernel::Partition>();
+    dst->runKernel<SortKernel, &SortKernel::Sort>();
   }
 };

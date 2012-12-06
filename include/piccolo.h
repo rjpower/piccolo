@@ -9,7 +9,7 @@
 #include "piccolo/master.h"
 #include "piccolo/kernel.h"
 #include "piccolo/table.h"
-
+#include "piccolo/table-inl.h"
 #ifndef SWIG
 DECLARE_int32(shards);
 DECLARE_int32(iterations);

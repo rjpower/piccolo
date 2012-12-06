@@ -14,13 +14,15 @@ struct SimpleProgram {
         new Accumulators<double>::Sum);
   }
 
+  static void ShardFunction(TableT<int32_t, double>* table, int shard) {
+    for (int64_t i = shard; i < 100000; i += table->numShards) {
+      a->update(i, random());
+      b->update(i, random());}
+  }
+
   void run(Master* m, const ConfigData& conf) {
     a->reserve(100000);
     b->reserve(100000);
-    m->run(a, [](TableT<int32_t, double>* shard) {
-      for (int64_t i = shard->shard; i < 100000; i += shard->numShards) {
-        a->update(i, random());
-        b->update(i, random());}
-    });
+    a->run<ShardFunction>();
   }
 };

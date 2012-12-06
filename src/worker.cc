@@ -16,8 +16,6 @@ using boost::unordered_set;
 
 DECLARE_double(sleep_time);
 DEFINE_double(sleep_hack, 0.0, "");
-DEFINE_string(checkpoint_write_dir, "/var/tmp/piccolo-checkpoint", "");
-DEFINE_string(checkpoint_read_dir, "/var/tmp/piccolo-checkpoint", "");
 
 namespace piccolo {
 
@@ -32,8 +30,6 @@ struct Worker::Stub: private boost::noncopyable {
 
 Worker::Worker(const ConfigData &c) {
   epoch_ = 0;
-  active_checkpoint_ = CP_NONE;
-
   network_ = rpc::NetworkThread::Get();
 
   config_.CopyFrom(c);
@@ -45,15 +41,15 @@ Worker::Worker(const ConfigData &c) {
     peers_[i] = new Stub(i + 1);
   }
 
-  running_ = true; //this is WORKER running, not KERNEL running!
-  krunning_ = false; //and this is for KERNEL running
-  handling_putreqs_ = false;
+  workerRunning_ = true;
+  kernelRunning_ = false;
+  handlingPuts_ = false;
   iterator_id_ = 0;
 
   // HACKHACKHACK - register ourselves with any existing tables
-  TableRegistry::Map &t = TableRegistry::tables();
+  TableRegistry::Map &t = TableRegistry::tables;
   for (TableRegistry::Map::iterator i = t.begin(); i != t.end(); ++i) {
-    i->second->setHelper((TableHelper*)this);
+    i->second->setHelper((TableHelper*) this);
   }
 
   // Register RPC endpoints.
@@ -81,22 +77,12 @@ Worker::Worker(const ConfigData &c) {
   rpc::RegisterCallback(MTYPE_WORKER_FINALIZE, new EmptyMessage,
       new EmptyMessage, &Worker::HandleFinalize, this);
 
-  rpc::RegisterCallback(MTYPE_START_CHECKPOINT_ASYNC, new CheckpointRequest,
-      new EmptyMessage, &Worker::HandleStartCheckpointAsync, this);
-
-  rpc::RegisterCallback(MTYPE_FINISH_CHECKPOINT_ASYNC,
-      new CheckpointFinishRequest, new EmptyMessage,
-      &Worker::HandleFinishCheckpointAsync, this);
-
-  rpc::RegisterCallback(MTYPE_RESTORE, new StartRestore, new EmptyMessage,
-      &Worker::HandleStartRestore, this);
-
   rpc::NetworkThread::Get()->SpawnThreadFor(MTYPE_WORKER_FLUSH);
   rpc::NetworkThread::Get()->SpawnThreadFor(MTYPE_WORKER_APPLY);
 }
 
 int Worker::peer_for_shard(int table, int shard) const {
-  return TableRegistry::tables()[table]->workerForShard(shard);
+  return TableRegistry::tables[table]->workerForShard(shard);
 }
 
 void Worker::Run() {
@@ -104,7 +90,7 @@ void Worker::Run() {
 }
 
 Worker::~Worker() {
-  running_ = false;
+  workerRunning_ = false;
 
   for (size_t i = 0; i < peers_.size(); ++i) {
     delete peers_[i];
@@ -119,19 +105,19 @@ void Worker::KernelLoop() {
 
   KernelRequest kreq;
 
-  while (running_) {
+  while (workerRunning_) {
     Timer idle;
 
     while (!network_->TryRead(config_.master_id(), MTYPE_RUN_KERNEL, &kreq)) {
       CheckNetwork();
       Sleep(FLAGS_sleep_time);
 
-      if (!running_) {
+      if (!workerRunning_) {
         return;
       }
 
     }
-    krunning_ = true; //a kernel is running
+    kernelRunning_ = true; //a kernel is running
     stats_["idle_time"] += idle.elapsed();
 
     VLOG(1) << "Received run request for " << kreq;
@@ -141,27 +127,17 @@ void Worker::KernelLoop() {
       << " : " << peer_for_shard(kreq.table(), kreq.shard());
     }
 
-    KernelInfo *helper = KernelRegistry::Get()->kernel(kreq.kernel());
-    KernelId id(kreq.kernel(), kreq.table(), kreq.shard());
-    KernelBase* d = kernels_[id];
-
-    if (!d) {
-      d = helper->create();
-      kernels_[id] = d;
-      d->initialize_internal(this, kreq.table(), kreq.shard());
-      d->_init();
-    }
+    Kernel* k = KernelRegistry::create(kreq.kernelid());
 
     if (this->id() == 1 && FLAGS_sleep_hack > 0) {
       Sleep(FLAGS_sleep_hack);
     }
 
-    // Run the user kernel
-    helper->Run(d, kreq.method());
+    k->run(TableRegistry::table(kreq.table()), kreq.shard());
 
     KernelDone kd;
     kd.mutable_kernel()->CopyFrom(kreq);
-    TableRegistry::Map &tmap = TableRegistry::tables();
+    TableRegistry::Map &tmap = TableRegistry::tables;
     for (TableRegistry::Map::iterator i = tmap.begin(); i != tmap.end(); ++i) {
       ShardedTable* t = i->second;
       for (int j = 0; j < t->numShards; ++j) {
@@ -174,7 +150,7 @@ void Worker::KernelLoop() {
         }
       }
     }
-    krunning_ = false;
+    kernelRunning_ = false;
     network_->Send(config_.master_id(), MTYPE_KERNEL_DONE, kd);
 
     VLOG(1) << "Kernel finished: " << kreq;
@@ -190,10 +166,7 @@ void Worker::CheckNetwork() {
   // Flush any tables we no longer own.
   for (unordered_set<ShardedTable*>::iterator i = dirty_tables_.begin();
       i != dirty_tables_.end(); ++i) {
-    ShardedTable *mg = dynamic_cast<ShardedTable*>(*i);
-    if (mg) {
-      mg->sendUpdates();
-    }
+    ShardedTable *t = dynamic_cast<ShardedTable*>(*i);
   }
 
   dirty_tables_.clear();
@@ -203,12 +176,9 @@ void Worker::CheckNetwork() {
 int64_t Worker::pending_kernel_bytes() const {
   int64_t t = 0;
 
-  TableRegistry::Map &tmap = TableRegistry::tables();
+  TableRegistry::Map &tmap = TableRegistry::tables;
   for (TableRegistry::Map::iterator i = tmap.begin(); i != tmap.end(); ++i) {
     ShardedTable *mg = dynamic_cast<ShardedTable*>(i->second);
-    if (mg) {
-      t += mg->pendingWriteBytes();
-    }
   }
 
   return t;
@@ -224,26 +194,19 @@ bool Worker::has_incoming_data() const {
 
 void Worker::HandlePutRequest() {
   boost::recursive_try_mutex::scoped_lock sl(state_lock_);
-  if (!sl.owns_lock() || handling_putreqs_ == true)
-    return;
-
-  handling_putreqs_ = true; //protected by state_lock_
+  handlingPuts_ = true;
 
   TableData put;
   while (network_->TryRead(rpc::ANY_SOURCE, MTYPE_PUT_REQUEST, &put)) {
-    if (put.marker() != -1) {
-      UpdateEpoch(put.source(), put.marker());
-      continue;
-    }
-
     VLOG(2) << "Read put request of size: " << put.kv_data_size() << " for "
                << MP(put.table(), put.shard());
 
     ShardedTable *t = TableRegistry::table(put.table());
-    t->applyUpdates(put);
+    //t->applyUpdates(put);
+    LOG(FATAL)<< "TODO";
   }
 
-  handling_putreqs_ = false; //protected by state_lock_
+  handlingPuts_ = false;
 }
 
 void Worker::HandleGetRequest(const HashGet& get_req, TableData *get_resp,
@@ -259,7 +222,15 @@ void Worker::HandleGetRequest(const HashGet& get_req, TableData *get_resp,
 
   {
     ShardedTable * t = TableRegistry::table(get_req.table());
-    t->handleGetRequest(get_req, get_resp);
+    Table* shard = t->partition(get_req.shard());
+    if (shard->containsStr(get_req.key())) {
+      get_resp->set_missing_key(false);
+      Arg* kv = get_resp->add_kv_data();
+      kv->set_key(get_req.key());
+      kv->set_value(shard->getStr(get_req.key()));
+    } else {
+      get_resp->set_missing_key(true);
+    }
   }
 
   VLOG(2) << "Returning result for " << MP(get_req.table(), get_req.shard())
@@ -271,7 +242,8 @@ void Worker::HandleSwapRequest(const SwapTable& req, EmptyMessage *resp,
   ShardedTable *ta = TableRegistry::table(req.table_a());
   ShardedTable *tb = TableRegistry::table(req.table_b());
 
-  ta->swapLocal(tb);
+  // ta->swapLocal(tb);
+  LOG(FATAL) << "TODO";
 }
 
 void Worker::HandleClearRequest(const ClearTable& req, EmptyMessage *resp,
@@ -293,7 +265,7 @@ void Worker::HandleIteratorRequest(const IteratorRequest& iterator_req,
   ShardedTable * t = TableRegistry::table(table);
   TableIterator* it = NULL;
   if (iterator_req.id() == -1) {
-    it = t->iterator(shard);
+    it = t->partition(shard)->iterator();
     uint32_t id = iterator_id_++;
     iterators_[id] = it;
     iterator_resp->set_id(id);
@@ -332,7 +304,7 @@ void Worker::HandleShardAssignment(const ShardAssignmentRequest& shard_req,
     const ShardAssignment &a = shard_req.assign(i);
     ShardedTable *t = TableRegistry::table(a.table());
     int old_workerForShard = t->workerForShard(a.shard());
-    t->partitionInfo(a.shard())->sinfo.set_owner(a.new_worker());
+    t->partitionInfo(a.shard())->set_owner(a.new_worker());
 
     VLOG(3) << "Setting workerForShard: " << MP(a.shard(), a.new_worker());
 
@@ -346,14 +318,14 @@ void Worker::HandleShardAssignment(const ShardAssignmentRequest& shard_req,
         LOG(INFO)<< "Setting " << MP(a.table(), a.shard())
         << " as tainted.  Old workerForShard was: " << old_workerForShard
         << " new workerForShard is :  " << id();
-        t->partitionInfo(a.shard())->tainted = true;
+        t->partitionInfo(a.shard())->set_tainted(true);
       }
     } else if (old_workerForShard == id() && a.new_worker() != id()) {
       VLOG(1)
       << "Lost workerForShardship of " << MP(a.table(), a.shard()) << " to "
       << a.new_worker();
       // A new worker has taken workerForShardship of this shard.  Flush our data out.
-      t->partitionInfo(a.shard())->dirty = true;
+      t->partitionInfo(a.shard())->set_dirty(true);
       dirty_tables_.insert(t);
     }
   }
@@ -363,13 +335,13 @@ void Worker::HandleFlush(const EmptyMessage& req, FlushResponse *resp,
     const rpc::RPCInfo& rpc) {
   Timer net;
 
-  TableRegistry::Map &tmap = TableRegistry::tables();
+  TableRegistry::Map &tmap = TableRegistry::tables;
 
   for (TableRegistry::Map::iterator i = tmap.begin(); i != tmap.end(); ++i) {
     ShardedTable* t = dynamic_cast<ShardedTable*>(i->second);
     if (t) {
       VLOG(2) << "Doing flush for table " << i->second;
-      t->sendUpdates();
+      LOG(FATAL) << "TODO - send updates";
     }
   }
   network_->Flush();
@@ -382,11 +354,6 @@ void Worker::HandleFlush(const EmptyMessage& req, FlushResponse *resp,
 
 void Worker::HandleApply(const EmptyMessage& req, EmptyMessage *resp,
     const rpc::RPCInfo& rpc) {
-  if (krunning_) {
-    LOG(FATAL)<< "Received APPLY message while still running!?!";
-    return;
-  }
-
   HandlePutRequest();
 
   network_->Send(config_.master_id(), MTYPE_WORKER_APPLY_DONE, *resp);
@@ -396,10 +363,6 @@ void Worker::HandleFinalize(const EmptyMessage& req, EmptyMessage *resp,
     const rpc::RPCInfo& rpc) {
   Timer net;
   VLOG(2) << "Finalize request received from master; performing finalization.";
-
-  if (active_checkpoint_ == CP_CONTINUOUS) {
-    active_checkpoint_ = CP_INTERVAL; //this will let it finalize properly
-  }
 
   VLOG(2) << "Telling master: Finalized.";
   network_->Send(config_.master_id(), MTYPE_WORKER_FINALIZE_DONE, *resp);
@@ -415,45 +378,9 @@ void Worker::CheckForMasterUpdates() {
 
   if (network_->TryRead(config_.master_id(), MTYPE_WORKER_SHUTDOWN, &empty)) {
     VLOG(1) << "Shutting down worker " << config_.worker_id();
-    running_ = false;
+    workerRunning_ = false;
     return;
   }
-
-  CheckpointRequest checkpoint_msg;
-  while (network_->TryRead(config_.master_id(), MTYPE_START_CHECKPOINT,
-      &checkpoint_msg)) {
-    for (int i = 0; i < checkpoint_msg.table_size(); ++i) {
-      checkpoint_tables_.insert(std::make_pair(checkpoint_msg.table(i), true));
-    }
-
-    VLOG(1) << "Starting checkpoint type " << checkpoint_msg.checkpoint_type()
-               << ", epoch " << checkpoint_msg.epoch();
-    StartCheckpoint(checkpoint_msg.epoch(),
-        (CheckpointType) checkpoint_msg.checkpoint_type(), false);
-  }
-
-  CheckpointFinishRequest checkpoint_finish_msg;
-  while (network_->TryRead(config_.master_id(), MTYPE_FINISH_CHECKPOINT,
-      &checkpoint_finish_msg)) {
-    VLOG(1) << "Finishing checkpoint on master's instruction";
-    FinishCheckpoint(checkpoint_finish_msg.next_delta_only());
-  }
-}
-
-void Worker::HandleStartCheckpointAsync(const CheckpointRequest& req,
-    EmptyMessage* resp, const rpc::RPCInfo& rpc) {
-  VLOG(1) << "Async order for checkpoint received.";
-  checkpoint_tables_.clear();
-  for (int i = 0; i < req.table_size(); ++i) {
-    checkpoint_tables_.insert(std::make_pair(req.table(i), true));
-  }
-  StartCheckpoint(req.epoch(), (CheckpointType) req.checkpoint_type(), false);
-}
-
-void Worker::HandleFinishCheckpointAsync(const CheckpointFinishRequest& req,
-    EmptyMessage *resp, const rpc::RPCInfo& rpc) {
-  VLOG(1) << "Async order for checkpoint finish received.";
-  FinishCheckpoint(req.next_delta_only());
 }
 
 bool StartWorker(const ConfigData& conf) {

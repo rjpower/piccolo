@@ -4,14 +4,40 @@
 
 namespace piccolo {
 
-void ShardedTable::updatePartitions(const ShardInfo& info) {
-  partInfo_[info.shard()].sinfo.CopyFrom(info);
+TableRegistry::Map TableRegistry::tables;
+
+ProtoTableCoder::ProtoTableCoder(TableData* t) :
+    t_(t), pos_(0) {
+}
+
+void ProtoTableCoder::write(StringPiece key, StringPiece value) {
+  Arg* a = t_->add_kv_data();
+  a->set_key(key.data, key.size());
+  a->set_value(value.data, value.size());
+}
+
+bool ProtoTableCoder::read(string* key, string* value) {
+  if (pos_ < t_->kv_data_size()) {
+    *key = t_->kv_data(pos_).key();
+    *value = t_->kv_data(pos_).value();
+    ++pos_;
+    return true;
+  }
+  return false;
 }
 
 ShardedTable::~ShardedTable() {
   for (int i = 0; i < partitions_.size(); ++i) {
     delete partitions_[i];
   }
+}
+
+void ShardedTable::updatePartitions(const ShardInfo& info) {
+  partInfo_[info.shard()].CopyFrom(info);
+}
+
+int64_t ShardedTable::shardSize(int shard) {
+  return partInfo_[shard].entries();
 }
 
 bool ShardedTable::isLocalShard(int shard) {
@@ -22,112 +48,56 @@ bool ShardedTable::isLocalKey(const StringPiece &k) {
   return isLocalShard(shardForKeyStr(k));
 }
 
-void ShardedTable::swap(ShardedTable *b) {
-  SwapTable req;
-
-  req.set_table_a(this->id);
-  req.set_table_b(b->id);
-  VLOG(2)
-             << StringPrintf("Sending swap request (%d <--> %d)", req.table_a(),
-                 req.table_b());
-
-  rpc::NetworkThread::Get()->SyncBroadcast(MTYPE_SWAP_TABLE, req);
+Table* ShardedTable::partition(int shard) {
+  return partitions_[shard];
 }
 
-void ShardedTable::clear() {
-  ClearTable req;
-
-  req.set_table(this->id);
-  VLOG(2) << StringPrintf("Sending clear request (%d)", req.table());
-
-  rpc::NetworkThread::Get()->SyncBroadcast(MTYPE_CLEAR_TABLE, req);
+ShardInfo* ShardedTable::partitionInfo(int shard) {
+  return &partInfo_[shard];
 }
 
-void ShardedTable::handleGetRequest(const HashGet& get_req,
-    TableData *get_resp) {
-  boost::recursive_mutex::scoped_lock sl(mutex_);
+int ShardedTable::workerForShard(int shard) {
+  return partInfo_[shard].owner();
+}
 
-  int shard = get_req.shard();
-  if (!isLocalShard(shard)) {
-    LOG_EVERY_N(WARNING, 1000)
-    << "Not local for shard: " << shard;
-  }
+RemoteIterator::RemoteIterator(ShardedTable *table, int shard) :
+    owner_(table), shard_(shard), done_(false) {
+  request_.set_table(table->id);
+  request_.set_shard(shard_);
+  request_.set_row_count(kReadAhead);
+  int target_worker = table->workerForShard(shard);
+  rpc::NetworkThread::Get()->Call(target_worker + 1, MTYPE_ITERATOR, request_,
+      &response_);
+  request_.set_id(response_.id());
+  pos_ = 0;
+}
 
-  Table *t = dynamic_cast<Table*>(partitions_[shard]);
-  if (!t->containsStr(get_req.key())) {
-    get_resp->set_missing_key(true);
+void RemoteIterator::Next() {
+  int target_worker = dynamic_cast<ShardedTable*>(owner_)->workerForShard(
+      shard_);
+  if (pos_ == response_.row_count() - 1) {
+    CHECK(!response_.done());
+    rpc::NetworkThread::Get()->Call(target_worker + 1, MTYPE_ITERATOR, request_,
+        &response_);
+    if (response_.row_count() < 1 && !response_.done())
+      LOG(ERROR)<< "Call to server requesting " << request_.row_count()
+      << " rows returned " << response_.row_count() << " rows.";
+    pos_ = 0;
   } else {
-    Arg *kv = get_resp->add_kv_data();
-    kv->set_key(get_req.key());
-    kv->set_value(t->getStr(get_req.key()));
+    ++pos_;
   }
 }
 
-void ShardedTable::handlePutRequests() {
+bool RemoteIterator::done() {
+  return response_.done() && pos_ == response_.row_count();
 }
 
-void ShardedTable::sendUpdates() {
-  TableData put;
-  boost::recursive_mutex::scoped_lock sl(mutex_);
-  for (int i = 0; i < partitions_.size(); ++i) {
-    Table *t = partitions_[i];
-    TableCoder* c = NULL;
-
-    if (!isLocalShard(i) && (partitionInfo(i)->dirty || !t->empty())) {
-      // Always send at least one chunk, to ensure that we clear taint on
-      // tables we own.
-      do {
-        put.Clear();
-
-        if (!t->empty()) {
-          ProtoTableCoder c(&put);
-          TableIterator* it = t->iterator();
-          for (; !it->done(); it->Next()) {
-            c.write(it->keyStr(), it->valueStr());
-          }
-          t->clear();
-        }
-
-        put.set_shard(i);
-        put.set_source(workerId_);
-        put.set_table(id);
-        put.set_epoch(-1);
-
-        put.set_done(true);
-
-        VLOG(3) << "Sending update for " << MP(t->id, t->shard) << " to "
-                   << workerForShard(i) << " size " << put.kv_data_size();
-
-        rpc::NetworkThread::Get()->Send(workerForShard(i) + 1,
-            MTYPE_PUT_REQUEST, put);
-      } while (!t->empty());
-
-      VLOG(3) << "Done with update for " << MP(t->id, t->shard);
-      t->clear();
-    }
-  }
-
-  pendingWrites_ = 0;
+void RemoteIterator::valueStr(string* out) {
+  *out = response_.value(pos_);
 }
 
-int64_t ShardedTable::pendingWriteBytes() {
-  int64_t s = 0;
-  for (int i = 0; i < partitions_.size(); ++i) {
-    Table *t = partitions_[i];
-    if (!isLocalShard(i)) {
-      s += t->size();
-    }
-  }
-
-  return s;
-}
-
-void ShardedTable::swapLocal(ShardedTable *b) {
-  CHECK(this != b);
-
-  ShardedTable *mb = dynamic_cast<ShardedTable*>(b);
-  std::swap(partInfo_, mb->partInfo_);
-  std::swap(partitions_, mb->partitions_);
+void RemoteIterator::keyStr(string* out) {
+  *out = response_.key(pos_);
 }
 
 }

@@ -166,7 +166,19 @@ static pos kZero(0, 0, 0);
 static TableT<pos, PosSet> *curr;
 static TableT<pos, PosSet> *next;
 
-class NBodyKernel: public DSMKernel {
+static pos compute_force(pos p1, pos p2) {
+  float dist = (p1 - p2).magnitude_squared();
+  if (dist > kCutoffRadius) {
+    return kZero;
+  }
+  if (dist < 1e-8) {
+    return kZero;
+  }
+
+  return (p1 - p2) / dist;
+}
+
+class NBodyKernel: public Kernel {
 public:
   virtual ~NBodyKernel() {
   }
@@ -177,43 +189,6 @@ public:
     scratch.clear();
     scratch.insert(pt);
     return scratch;
-  }
-
-  void CreatePoints() {
-    pos ul = pos::pos_for_shard(currentShard());
-
-    int pid = 0;
-    // Create randomly distributed particles for each box inside of this shard
-    for (int dx = 0; dx < kPartitionSize; ++dx) {
-      for (int dy = 0; dy < kPartitionSize; ++dy) {
-        for (int dz = 0; dz < kPartitionSize; ++dz) {
-          int num_points = std::max(1,
-              int(FLAGS_particles / pow(kWorldSize, 3)));
-          pos b = ul + pos(dx, dy, dz) * kBoxSize;
-          for (int i = 0; i < num_points; ++i) {
-            pos pt = b
-                + pos(rand_double() * kBoxSize, rand_double() * kBoxSize,
-                    rand_double() * kBoxSize);
-            pt.id = pid++;
-
-            curr->update(pt.get_box(), get_set(pt));
-          }
-        }
-      }
-    }
-  }
-
-  pos compute_force(pos p1, pos p2) {
-    float dist = (p1 - p2).magnitude_squared();
-    if (dist > kCutoffRadius) {
-      return kZero;
-    }
-    if (dist < 1e-8) {
-      return kZero;
-    }
-
-    ++interaction_count;
-    return (p1 - p2) / dist;
   }
 
   void compute_update(pos box, const PosSet& points) {
@@ -254,15 +229,37 @@ public:
     }
   }
 
-  void Simulate() {
+  void createPoints(TableT<pos, PosSet>* t, int shardId) {
+    // Create randomly distributed particles for each box inside of this shard
+    pos ul = pos::pos_for_shard(shardId);
+
+    int pid = 0;
+    for (int dx = 0; dx < kPartitionSize; ++dx) {
+      for (int dy = 0; dy < kPartitionSize; ++dy) {
+        for (int dz = 0; dz < kPartitionSize; ++dz) {
+          int num_points = std::max(1,
+              int(FLAGS_particles / pow(kWorldSize, 3)));
+          pos b = ul + pos(dx, dy, dz) * kBoxSize;
+          for (int i = 0; i < num_points; ++i) {
+            pos pt = b
+                + pos(rand_double() * kBoxSize, rand_double() * kBoxSize,
+                    rand_double() * kBoxSize);
+            pt.id = pid++;
+
+            curr->update(pt.get_box(), get_set(pt));
+          }
+        }
+      }
+    }
+  }
+
+  void simulate(TableT<pos, PosSet>* t, int shardId) {
     cache.clear();
 
     // Iterate over each box in this partition.
-    TableIteratorT<pos, PosSet>* it = curr->typedIterator();
+    TableIteratorT<pos, PosSet>* it = t->typedIterator();
 
     for (int count = 0; !it->done(); ++count) {
-//      LOG(INFO) << it->key() << " : " << it->value().size();
-      interaction_count = 0;
       const pos& box_pos = it->key();
       compute_update(box_pos, it->value());
       it->Next();
@@ -270,7 +267,6 @@ public:
     delete it;
   }
 
-  int interaction_count;
 };
 }
 
@@ -285,13 +281,15 @@ struct NBody {
   }
 
   void run(Master* m, const ConfigData& conf) {
-    m->run(curr, &NBodyKernel::CreatePoints);
+    curr->runKernel<NBodyKernel, &NBodyKernel::createPoints>();
     for (int i = 0; i < FLAGS_iterations; ++i) {
       LOG(INFO)<< "Running iteration: " << MP(i, FLAGS_iterations);
-      m->run(curr, &NBodyKernel::CreatePoints);
+      curr->runKernel<NBodyKernel, &NBodyKernel::simulate>();
 
       curr->clear();
       curr->swap(next);
     }
   }
 };
+
+REGISTER_RUNNER(NBody);

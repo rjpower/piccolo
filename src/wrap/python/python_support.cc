@@ -11,7 +11,7 @@ DEFINE_bool(crawler_triggers, false, "Use trigger-based crawler (t/f).");
 
 namespace piccolo {
 
-KernelBase* kernel() { return the_kernel; }
+Kernel* kernel() { return the_kernel; }
 
 double crawler_runtime() {
   return FLAGS_crawler_runtime;
@@ -274,7 +274,7 @@ bool PythonTrigger<string, string>::CallPythonTrigger(PyObjectPtr callable, PyOb
   return ProcessPyRetval(PyTuple_GetItem(retval,1));
 }
 
-class PythonKernel: public KernelBase {
+class PythonKernel: public Kernel {
 public:
   bool is_swapaccum(void) { return false; }
   virtual ~PythonKernel() {}
