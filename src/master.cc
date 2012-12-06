@@ -114,7 +114,7 @@ struct WorkerState: private boost::noncopyable {
     TableRegistry::Map &tables = TableRegistry::tables;
     for (TableRegistry::Map::iterator i = tables.begin(); i != tables.end();
         ++i) {
-      if (shard < i->second->numShards) {
+      if (shard < i->second->numShards()) {
         Taskid t(i->first, shard);
         if (should_service) {
           shards.insert(t);
@@ -196,7 +196,7 @@ struct WorkerState: private boost::noncopyable {
         &TaskState::WeightCompare);
 
     msg->set_kernelid(r.kernelId);
-    msg->set_table(r.table->id);
+    msg->set_table(r.table->id());
     msg->set_shard(best->id.shard);
 
     best->status = TaskState::ACTIVE;
@@ -286,7 +286,7 @@ WorkerState* Master::assign_worker(int table, int shard) {
   }
 
   CHECK(best != NULL)
-                         << "Ran out of workers!  Increase the number of partitions per worker!";
+                         << "Ran out of workers!  Increase the number of shards per worker!";
 
 //  LOG(INFO) << "Assigned " << MP(table, shard, best->id);
   CHECK(best->alive());
@@ -315,7 +315,7 @@ void Master::send_table_assignments() {
 }
 
 bool Master::steal_work(const RunDescriptor& r, int idle_worker,
-    double avg_completion_time) {
+                        double avg_completion_time) {
   if (!FLAGS_work_stealing) {
     return false;
   }
@@ -343,10 +343,10 @@ bool Master::steal_work(const RunDescriptor& r, int idle_worker,
 
   double average_size = 0;
 
-  for (int i = 0; i < r.table->numShards; ++i) {
+  for (int i = 0; i < r.table->numShards(); ++i) {
     average_size += static_cast<ShardedTable*>(r.table)->shardSize(i);
   }
-  average_size /= r.table->numShards;
+  average_size /= r.table->numShards();
 
   // Weight the cost of moving the table versus the time savings.
   double move_cost = std::max(1.0,
@@ -383,11 +383,11 @@ void Master::assign_tables() {
   TableRegistry::Map &tables = TableRegistry::tables;
   for (TableRegistry::Map::iterator i = tables.begin(); i != tables.end();
       ++i) {
-    if (!i->second->numShards) {
+    if (!i->second->numShards()) {
       VLOG(2) << "Note: assigning tables; table " << i->first
                  << " has no shards.";
     }
-    for (int j = 0; j < i->second->numShards; ++j) {
+    for (int j = 0; j < i->second->numShards(); ++j) {
       assign_worker(i->first, j);
     }
   }
@@ -400,9 +400,9 @@ void Master::assign_tasks(const RunDescriptor& r, vector<int> shards) {
   }
 
   for (size_t i = 0; i < shards.size(); ++i) {
-    VLOG(1) << "Assigning worker for table " << r.table->id << " for shard "
+    VLOG(1) << "Assigning worker for table " << r.table->id() << " for shard "
                << i << " of " << shards.size();
-    assign_worker(r.table->id, shards[i]);
+    assign_worker(r.table->id(), shards[i]);
   }
 }
 
@@ -443,7 +443,7 @@ int Master::reap_one_task() {
 
     for (int i = 0; i < done_msg.shards_size(); ++i) {
       const ShardInfo &si = done_msg.shards(i);
-      tables_[si.table()]->updatePartitions(si);
+      tables_[si.table()]->updateShards(si);
     }
 
     w.set_finished(task_id);
@@ -461,14 +461,8 @@ int Master::reap_one_task() {
 }
 
 void Master::run(RunDescriptor r) {
-  // HACKHACKHACK - register ourselves with any existing tables
-  for (TableRegistry::Map::iterator i = tables_.begin(); i != tables_.end();
-      ++i) {
-    i->second->setHelper((TableHelper*) this);
-  }
-
   finished_ = dispatched_ = 0;
-  vector<int> shards = range(r.table->numShards);
+  vector<int> shards = range(r.table->numShards());
 
   MethodStats &mstats = method_stats_[r.kernelId];
   mstats.set_calls(mstats.calls() + 1);

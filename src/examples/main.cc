@@ -1,10 +1,6 @@
 #include "piccolo.h"
 #include "examples.h"
 
-namespace piccolo {
-RunnerRegistry::Map RunnerRegistry::runners;
-}
-
 using namespace piccolo;
 
 DEFINE_string(runner, "", "");
@@ -26,10 +22,14 @@ int main(int argc, char** argv) {
   conf.set_num_workers(MPI::COMM_WORLD.Get_size() - 1);
   conf.set_worker_id(MPI::COMM_WORLD.Get_rank() - 1);
 
-  RunnerRegistry::runners[FLAGS_runner]->setup(conf);
+
+  RunHelper* r = RunnerRegistry::runners()[FLAGS_runner];
+  CHECK(r != NULL) << "Could not find runner for computation " << FLAGS_runner;
+
+  RunnerRegistry::runners()[FLAGS_runner]->setup(conf);
   if (!StartWorker(conf)) {
     Master m(conf);
-    RunnerRegistry::runners[FLAGS_runner]->run(&m, conf);
+    RunnerRegistry::runners()[FLAGS_runner]->run(&m, conf);
   }
   LOG(INFO)<< "Exiting.";
 }

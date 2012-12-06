@@ -46,12 +46,6 @@ Worker::Worker(const ConfigData &c) {
   handlingPuts_ = false;
   iterator_id_ = 0;
 
-  // HACKHACKHACK - register ourselves with any existing tables
-  TableRegistry::Map &t = TableRegistry::tables;
-  for (TableRegistry::Map::iterator i = t.begin(); i != t.end(); ++i) {
-    i->second->setHelper((TableHelper*) this);
-  }
-
   // Register RPC endpoints.
   rpc::RegisterCallback(MTYPE_GET, new HashGet, new TableData,
       &Worker::HandleGetRequest, this);
@@ -140,10 +134,10 @@ void Worker::KernelLoop() {
     TableRegistry::Map &tmap = TableRegistry::tables;
     for (TableRegistry::Map::iterator i = tmap.begin(); i != tmap.end(); ++i) {
       ShardedTable* t = i->second;
-      for (int j = 0; j < t->numShards; ++j) {
+      for (int j = 0; j < t->numShards(); ++j) {
         if (t->isLocalShard(j)) {
           ShardInfo *si = kd.add_shards();
-          si->set_entries(t->partition(j)->size());
+          si->set_entries(t->shard(j)->size());
           si->set_owner(this->id());
           si->set_table(i->first);
           si->set_shard(j);
@@ -210,7 +204,7 @@ void Worker::HandlePutRequest() {
 }
 
 void Worker::HandleGetRequest(const HashGet& get_req, TableData *get_resp,
-    const rpc::RPCInfo& rpc) {
+                              const rpc::RPCInfo& rpc) {
 //    LOG(INFO) << "Get request: " << get_req;
 
   get_resp->Clear();
@@ -222,7 +216,7 @@ void Worker::HandleGetRequest(const HashGet& get_req, TableData *get_resp,
 
   {
     ShardedTable * t = TableRegistry::table(get_req.table());
-    Table* shard = t->partition(get_req.shard());
+    Table* shard = t->shard(get_req.shard());
     if (shard->containsStr(get_req.key())) {
       get_resp->set_missing_key(false);
       Arg* kv = get_resp->add_kv_data();
@@ -238,34 +232,35 @@ void Worker::HandleGetRequest(const HashGet& get_req, TableData *get_resp,
 }
 
 void Worker::HandleSwapRequest(const SwapTable& req, EmptyMessage *resp,
-    const rpc::RPCInfo& rpc) {
+                               const rpc::RPCInfo& rpc) {
   ShardedTable *ta = TableRegistry::table(req.table_a());
   ShardedTable *tb = TableRegistry::table(req.table_b());
 
   // ta->swapLocal(tb);
-  LOG(FATAL) << "TODO";
+  LOG(FATAL)<< "TODO";
 }
 
 void Worker::HandleClearRequest(const ClearTable& req, EmptyMessage *resp,
-    const rpc::RPCInfo& rpc) {
+                                const rpc::RPCInfo& rpc) {
   ShardedTable *ta = TableRegistry::table(req.table());
 
-  for (int i = 0; i < ta->numShards; ++i) {
+  for (int i = 0; i < ta->numShards(); ++i) {
     if (ta->isLocalShard(i)) {
-      ta->partition(i)->clear();
+      ta->shard(i)->clear();
     }
   }
 }
 
 void Worker::HandleIteratorRequest(const IteratorRequest& iterator_req,
-    IteratorResponse *iterator_resp, const rpc::RPCInfo& rpc) {
+                                   IteratorResponse *iterator_resp,
+                                   const rpc::RPCInfo& rpc) {
   int table = iterator_req.table();
   int shard = iterator_req.shard();
 
   ShardedTable * t = TableRegistry::table(table);
   TableIterator* it = NULL;
   if (iterator_req.id() == -1) {
-    it = t->partition(shard)->iterator();
+    it = t->shard(shard)->iterator();
     uint32_t id = iterator_id_++;
     iterators_[id] = it;
     iterator_resp->set_id(id);
@@ -298,13 +293,14 @@ void Worker::HandleIteratorRequest(const IteratorRequest& iterator_req,
 }
 
 void Worker::HandleShardAssignment(const ShardAssignmentRequest& shard_req,
-    EmptyMessage *resp, const rpc::RPCInfo& rpc) {
+                                   EmptyMessage *resp,
+                                   const rpc::RPCInfo& rpc) {
 //  LOG(INFO) << "Shard assignment: " << shard_req.DebugString();
   for (int i = 0; i < shard_req.assign_size(); ++i) {
     const ShardAssignment &a = shard_req.assign(i);
     ShardedTable *t = TableRegistry::table(a.table());
     int old_workerForShard = t->workerForShard(a.shard());
-    t->partitionInfo(a.shard())->set_owner(a.new_worker());
+    t->shardInfo(a.shard())->set_owner(a.new_worker());
 
     VLOG(3) << "Setting workerForShard: " << MP(a.shard(), a.new_worker());
 
@@ -318,21 +314,21 @@ void Worker::HandleShardAssignment(const ShardAssignmentRequest& shard_req,
         LOG(INFO)<< "Setting " << MP(a.table(), a.shard())
         << " as tainted.  Old workerForShard was: " << old_workerForShard
         << " new workerForShard is :  " << id();
-        t->partitionInfo(a.shard())->set_tainted(true);
+        t->shardInfo(a.shard())->set_tainted(true);
       }
     } else if (old_workerForShard == id() && a.new_worker() != id()) {
       VLOG(1)
       << "Lost workerForShardship of " << MP(a.table(), a.shard()) << " to "
       << a.new_worker();
       // A new worker has taken workerForShardship of this shard.  Flush our data out.
-      t->partitionInfo(a.shard())->set_dirty(true);
+      t->shardInfo(a.shard())->set_dirty(true);
       dirty_tables_.insert(t);
     }
   }
 }
 
 void Worker::HandleFlush(const EmptyMessage& req, FlushResponse *resp,
-    const rpc::RPCInfo& rpc) {
+                         const rpc::RPCInfo& rpc) {
   Timer net;
 
   TableRegistry::Map &tmap = TableRegistry::tables;
@@ -341,7 +337,7 @@ void Worker::HandleFlush(const EmptyMessage& req, FlushResponse *resp,
     ShardedTable* t = dynamic_cast<ShardedTable*>(i->second);
     if (t) {
       VLOG(2) << "Doing flush for table " << i->second;
-      LOG(FATAL) << "TODO - send updates";
+      LOG(FATAL)<< "TODO - send updates";
     }
   }
   network_->Flush();
@@ -353,14 +349,14 @@ void Worker::HandleFlush(const EmptyMessage& req, FlushResponse *resp,
 }
 
 void Worker::HandleApply(const EmptyMessage& req, EmptyMessage *resp,
-    const rpc::RPCInfo& rpc) {
+                         const rpc::RPCInfo& rpc) {
   HandlePutRequest();
 
   network_->Send(config_.master_id(), MTYPE_WORKER_APPLY_DONE, *resp);
 }
 
 void Worker::HandleFinalize(const EmptyMessage& req, EmptyMessage *resp,
-    const rpc::RPCInfo& rpc) {
+                            const rpc::RPCInfo& rpc) {
   Timer net;
   VLOG(2) << "Finalize request received from master; performing finalization.";
 

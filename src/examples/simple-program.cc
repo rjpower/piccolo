@@ -15,7 +15,7 @@ struct SimpleProgram {
   }
 
   static void ShardFunction(TableT<int32_t, double>* table, int shard) {
-    for (int64_t i = shard; i < 100000; i += table->numShards) {
+    for (int64_t i = shard; i < 100000; i += table->numShards()) {
       a->update(i, random());
       b->update(i, random());}
   }

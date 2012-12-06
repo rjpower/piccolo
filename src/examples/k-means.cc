@@ -44,7 +44,7 @@ struct KMeans {
   }
 
   static void initialize(TableT<int32_t, Point>* points, int shard) {
-    const int numShards = points->numShards;
+    const int numShards = points->numShards();
     for (int64_t i = shard; i < FLAGS_num_points; i += numShards) {
       Cluster c = actual->get(i % FLAGS_num_clusters);
       Point p = {c.x + 0.1f * (rand_float() - 0.5f), c.y + 0.1f * (rand_float() - 0.5f), -1, 0};

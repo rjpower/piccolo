@@ -37,16 +37,16 @@ class SortKernel: public Kernel {
 public:
   void Init(SortTable* t, int shard) {
     KeyGen k;
-    for (int i = 0; i < FLAGS_sort_size / dst->numShards; ++i) {
+    for (int i = 0; i < FLAGS_sort_size / dst->numShards(); ++i) {
       src.push_back(k.next());
     }
   }
 
-  void Partition(SortTable* t, int shard) {
+  void Shard(SortTable* t, int shard) {
     Bucket b;
     b.mutable_value()->Add(0);
     for (int i = 0; i < src.size(); ++i) {
-      PERIODIC(1.0, LOG(INFO) << "Partitioning...." << 100. * i / src.size());
+      PERIODIC(1.0, LOG(INFO) << "Sharding...." << 100. * i / src.size());
       b.set_value(0, src[i]);
       dst->put(src[i] & 0xffff, b);
     }
@@ -72,7 +72,7 @@ struct IntegerSort: public Worker {
 
   void run(Master* m, const ConfigData& conf) {
     dst->runKernel<SortKernel, &SortKernel::Init>();
-    dst->runKernel<SortKernel, &SortKernel::Partition>();
+    dst->runKernel<SortKernel, &SortKernel::Shard>();
     dst->runKernel<SortKernel, &SortKernel::Sort>();
   }
 };

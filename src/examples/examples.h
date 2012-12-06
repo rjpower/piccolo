@@ -31,7 +31,10 @@ public:
 class RunnerRegistry {
 public:
   typedef std::map<string, RunHelper*> Map;
-  static Map runners;
+  static Map& runners() {
+    static Map m;
+    return m;
+  }
 };
 
 template<class C>
@@ -39,7 +42,7 @@ struct RunnerRegistrationHelper: public RunHelper {
   C* _instance;
   RunnerRegistrationHelper(const char* klass) {
     _instance = NULL;
-    RunnerRegistry::runners[klass] = this;
+    RunnerRegistry::runners()[klass] = this;
   }
 
   void setup(const ConfigData& c) {

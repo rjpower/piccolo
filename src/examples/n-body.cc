@@ -8,12 +8,12 @@ static const float kTimestep = 1e-6;
 // Each box is 1*1*1
 static const int kBoxSize = (int) ceil(kCutoffRadius);
 
-// A partition is 4*4*4 boxes.
-static const int kPartitionSize = 20;
+// A shard is 4*4*4 boxes.
+static const int kShardSize = 20;
 
 // World is a cube of boxes.
 static const int kWorldSize = 20;
-static const int kNumPartitions = kWorldSize / (kPartitionSize * kBoxSize);
+static const int kNumShards = kWorldSize / (kShardSize * kBoxSize);
 
 DEFINE_int64(particles, 1000000, "");
 
@@ -35,19 +35,19 @@ struct pos {
       id(b.id), x(b.x), y(b.y), z(b.z) {
   }
 
-  // Find the partition corresponding to this point
+  // Find the shard corresponding to this point
   static int shard_for_pos(const pos& p) {
-    const pos& grid = p.get_box() / kPartitionSize;
-    return int(grid.z) * kNumPartitions * kNumPartitions
-        + int(grid.y) * kNumPartitions + int(grid.x);
+    const pos& grid = p.get_box() / kShardSize;
+    return int(grid.z) * kNumShards * kNumShards
+        + int(grid.y) * kNumShards + int(grid.x);
   }
 
   static pos pos_for_shard(int id) {
-    int z = id / (kNumPartitions * kNumPartitions);
-    int y = (id % (kNumPartitions * kNumPartitions)) / kNumPartitions;
-    int x = id % kNumPartitions;
+    int z = id / (kNumShards * kNumShards);
+    int y = (id % (kNumShards * kNumShards)) / kNumShards;
+    int x = id % kNumShards;
 
-    return pos(x, y, z) * kPartitionSize;
+    return pos(x, y, z) * kShardSize;
   }
 
   uint32_t hash() const {
@@ -234,9 +234,9 @@ public:
     pos ul = pos::pos_for_shard(shardId);
 
     int pid = 0;
-    for (int dx = 0; dx < kPartitionSize; ++dx) {
-      for (int dy = 0; dy < kPartitionSize; ++dy) {
-        for (int dz = 0; dz < kPartitionSize; ++dz) {
+    for (int dx = 0; dx < kShardSize; ++dx) {
+      for (int dy = 0; dy < kShardSize; ++dy) {
+        for (int dz = 0; dz < kShardSize; ++dz) {
           int num_points = std::max(1,
               int(FLAGS_particles / pow(kWorldSize, 3)));
           pos b = ul + pos(dx, dy, dz) * kBoxSize;
@@ -256,7 +256,7 @@ public:
   void simulate(TableT<pos, PosSet>* t, int shardId) {
     cache.clear();
 
-    // Iterate over each box in this partition.
+    // Iterate over each box in this shard.
     TableIteratorT<pos, PosSet>* it = t->typedIterator();
 
     for (int count = 0; !it->done(); ++count) {
@@ -273,10 +273,10 @@ public:
 struct NBody {
   void setup(const ConfigData& conf) {
     curr = TableRegistry::sparse(
-        kNumPartitions * kNumPartitions * kNumPartitions, new PosSharding,
+        kNumShards * kNumShards * kNumShards, new PosSharding,
         new SetAccum);
     next = TableRegistry::sparse(
-        kNumPartitions * kNumPartitions * kNumPartitions, new PosSharding,
+        kNumShards * kNumShards * kNumShards, new PosSharding,
         new SetAccum);
   }
 

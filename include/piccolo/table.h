@@ -111,31 +111,11 @@ struct TableIterator {
   }
 };
 
-struct Table {
-  int id;
-  int numShards;
-
-  AccumulatorBase* accumulator;
-  MarshalBase* keyMarshal;
-  MarshalBase* valueMarshal;
-  SharderBase* sharder;
-
-  virtual bool containsStr(const StringPiece& k) = 0;
-  virtual string getStr(const StringPiece &k) = 0;
-  virtual void updateStr(const StringPiece &k, const StringPiece &v) = 0;
-
-  virtual void clear() = 0;
-  virtual bool empty() = 0;
-  virtual void reserve(int64_t new_size) = 0;
-  virtual void swap(Table*) = 0;
-
-  virtual int64_t size() = 0;
-
-  virtual TableIterator* iterator() = 0;
-};
-
 template<class K, class V>
 struct TableIteratorT: public TableIterator {
+  virtual bool done() = 0;
+  virtual void Next() = 0;
+
   virtual const K& key() = 0;
   virtual V& value() = 0;
 
@@ -146,6 +126,30 @@ struct TableIteratorT: public TableIterator {
     marshal<V>(value(), out);
   }
 protected:
+};
+
+struct TableBase {
+  virtual int32_t id() = 0;
+  virtual int32_t numShards() = 0;
+
+  virtual void clear() = 0;
+  virtual bool empty() = 0;
+  virtual void reserve(int64_t new_size) = 0;
+  virtual void swap(Table*) = 0;
+  virtual int64_t size() = 0;
+};
+
+struct Table: public TableBase {
+  virtual void clear() = 0;
+  virtual bool empty() = 0;
+  virtual void reserve(int64_t new_size) = 0;
+  virtual void swap(Table*) = 0;
+  virtual int64_t size() = 0;
+
+  virtual bool containsStr(const StringPiece& k) = 0;
+  virtual string getStr(const StringPiece &k) = 0;
+  virtual void updateStr(const StringPiece &k, const StringPiece &v) = 0;
+  virtual TableIterator* iterator() = 0;
 };
 
 // Key/value typed interface.
@@ -162,11 +166,25 @@ public:
     return defValue;
   }
 
+  // TableBase
+  virtual void clear() = 0;
+  virtual bool empty() = 0;
+  virtual void reserve(int64_t new_size) = 0;
+  virtual void swap(Table*) = 0;
+  virtual int64_t size() = 0;
+
+  // Typed operations
   virtual V get(const K &k) = 0;
   virtual void put(const K &k, const V &v) = 0;
   virtual void update(const K &k, const V &v) = 0;
   virtual void remove(const K &k) = 0;
   virtual TypedIter* typedIterator() = 0;
+
+  // Untyped operations
+  virtual bool containsStr(const StringPiece& k) = 0;
+  virtual string getStr(const StringPiece &k) = 0;
+  virtual void updateStr(const StringPiece &k, const StringPiece &v) = 0;
+  virtual TableIterator* iterator() = 0;
 
   template<void (*MapFunction)(const K&, V&)>
   void map() {
@@ -185,35 +203,21 @@ public:
 protected:
 };
 
-class ShardedTable: public Table {
+class ShardedTable {
 public:
-  virtual ~ShardedTable();
+  virtual int32_t id() = 0;
+  virtual int32_t numShards() = 0;
 
-  Table* partition(int shard);
-  ShardInfo* partitionInfo(int shard);
-  void updatePartitions(const ShardInfo& sinfo);
-  int64_t shardSize(int shard);
+  virtual Table* shard(int shard) = 0;
+  virtual ShardInfo* shardInfo(int shard) = 0;
+  virtual int64_t shardSize(int shard) = 0;
+  virtual void updateShards(const ShardInfo& sinfo) = 0;
 
-  bool isLocalShard(int shard);
-  bool isLocalKey(const StringPiece &k);
-  int workerForShard(int shard);
+  virtual bool isLocalShard(int shard) = 0;
+  virtual bool isLocalKey(const StringPiece &k) = 0;
+  virtual int workerForShard(int shard) = 0;
 
   virtual int shardForKeyStr(StringPiece) = 0;
-
-  void setHelper(TableHelper* h) {
-    worker_ = h;
-  }
-
-protected:
-  friend class Worker;
-  friend class Master;
-
-  boost::recursive_mutex mutex_;
-  std::vector<ShardInfo> partInfo_;
-  std::vector<Table*> partitions_;
-  int workerId_;
-  int pendingWrites_;
-  TableHelper* worker_;
 };
 
 template<class K, class V>
@@ -234,8 +238,7 @@ public:
   }
 
   template<class K, class V>
-  static TableT<K, V>* sparse(int numShards, Sharder<K>* sharding,
-      Accumulator<V>* accum);
+  static TableT<K, V>* sparse(int numShards, Sharder<K>* sharding, Accumulator<V>* accum);
 private:
 };
 

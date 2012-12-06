@@ -83,7 +83,7 @@ struct MatrixMultiplication {
   }
 
   static void init(TableT<int, Block>* table, int my_shard) {
-    int numShards = matrix_a->numShards;
+    int numShards = matrix_a->numShards();
 
     ShardHelper sh(my_shard, numShards);
 
@@ -111,7 +111,7 @@ struct MatrixMultiplication {
   static void multiply(TableT<int, Block>* table, int my_shard) {
     Block a, b, c;
 
-    int numShards = matrix_a->numShards;
+    int numShards = matrix_a->numShards();
     ShardHelper sh(my_shard, numShards);
 
     for (int k = 0; k < bRows; k++) {
@@ -133,7 +133,7 @@ struct MatrixMultiplication {
   }
 
   static void print(TableT<int, Block>* table, int shard) {
-    ShardHelper sh(shard, matrix_a->numShards);
+    ShardHelper sh(shard, matrix_a->numShards());
     Block b = matrix_c->get(sh.block_id(0, 0));
     for (int i = 0; i < 5; ++i) {
       for (int j = 0; j < 5; ++j) {

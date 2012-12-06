@@ -50,13 +50,14 @@ EXAMPLE_SRC := examples/examples.pb.cc\
 
 EXAMPLE_OBJ:=$(EXAMPLE_SRC:.cc=.o)
 
-%.o : %.cc ${PROTO_H}
+%.o : %.cc ${PROTO_H} 
+	@mkdir -p $(dir $@)
 	${CXX} ${CPPFLAGS} ${CXXFLAGS} -c -o $@ $<
 
 %.pb.h %.pb.cc : %.proto
 	protoc -I${SRCDIR} $< --cpp_out=./
 
-all: example-driver piccolo.o
+all: dependencies example-driver piccolo.o
 
 piccolo.o: ${LIB_OBJ}
 	ld -r -o $@ $^
@@ -65,7 +66,9 @@ example-driver: ${EXAMPLE_OBJ} piccolo.o
 	${CXX} -o $@ $(filter %.o, $^) ${LDFLAGS}
 
 clean:
-	find -name '*.o' -o -name '*.a' -o -name '*.so' -exec rm "{}" \;
+	# don't blow away the source directory in case the user accidently
+	# runs make from there.
+	cd .. && rm -rf build/
 	
 .PRECIOUS: %.pb.h %.pb.cc
-.PHONY: all clean
+.PHONY: all clean dependencies

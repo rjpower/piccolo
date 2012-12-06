@@ -26,43 +26,9 @@ bool ProtoTableCoder::read(string* key, string* value) {
   return false;
 }
 
-ShardedTable::~ShardedTable() {
-  for (int i = 0; i < partitions_.size(); ++i) {
-    delete partitions_[i];
-  }
-}
-
-void ShardedTable::updatePartitions(const ShardInfo& info) {
-  partInfo_[info.shard()].CopyFrom(info);
-}
-
-int64_t ShardedTable::shardSize(int shard) {
-  return partInfo_[shard].entries();
-}
-
-bool ShardedTable::isLocalShard(int shard) {
-  return workerForShard(shard) == workerId_;
-}
-
-bool ShardedTable::isLocalKey(const StringPiece &k) {
-  return isLocalShard(shardForKeyStr(k));
-}
-
-Table* ShardedTable::partition(int shard) {
-  return partitions_[shard];
-}
-
-ShardInfo* ShardedTable::partitionInfo(int shard) {
-  return &partInfo_[shard];
-}
-
-int ShardedTable::workerForShard(int shard) {
-  return partInfo_[shard].owner();
-}
-
 RemoteIterator::RemoteIterator(ShardedTable *table, int shard) :
     owner_(table), shard_(shard), done_(false) {
-  request_.set_table(table->id);
+  request_.set_table(table->id());
   request_.set_shard(shard_);
   request_.set_row_count(kReadAhead);
   int target_worker = table->workerForShard(shard);
