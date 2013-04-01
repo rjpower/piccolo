@@ -222,6 +222,13 @@ public:
     }
     return s;
   }
+
+  void swap(Table* t) {
+    ShardedTable* other = dynamic_cast<ShardedTable*>(t);
+    for (int i = 0; i < this->shards_.size(); ++i) {
+      typedP(i)->swap(other->shard(i));
+    }
+  }
 };
 
 // Adds TableT<> to a sharded table.
@@ -255,10 +262,6 @@ public:
 
   void remove(const K& k) {
     getShard(k)->remove(k);
-  }
-
-  void swap(Table *other) {
-    LOG(FATAL)<< "Not implemented, man.";
   }
 
   TableIteratorT<K, V>* typedIterator() {
